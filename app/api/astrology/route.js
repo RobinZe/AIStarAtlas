@@ -4,7 +4,7 @@ export const runtime = "nodejs";
 
 /**
  * POST /api/astrology
- * body: { year, month, day, hour, minute, lat, lng, tzOffset? }
+ * body: { year, month, day, hour, minute, latitude/longitude 或 lat/lng, tzOffset? }
  * 返回: {
  *  code: 200,
  *  data: {
@@ -21,21 +21,47 @@ export const runtime = "nodejs";
 export async function POST(req) {
   try {
     const body = await req.json();
-    const { year, month, day, hour, minute, lat, lng, tzOffset } = body || {};
-    if (![year, month, day, hour, minute, lat, lng].every(v => v !== undefined && v !== null && v !== "")) {
-      return NextResponse.json({ code: 400, msg: "参数不完整" });
+    const { year, month, day, hour, minute, lat, lng, latitude, longitude, tzOffset } = body || {};
+
+    // 统一转数值与字段兼容（优先 latitude/longitude）
+    const yearNum = toNumber(year);
+    const monthNum = toNumber(month);
+    const dayNum = toNumber(day);
+    const hourNum = toNumber(hour);
+    const minuteNum = toNumber(minute);
+
+    const latVal = (latitude !== undefined && latitude !== null ? latitude : lat);
+    const lngVal = (longitude !== undefined && longitude !== null ? longitude : lng);
+
+    if (![yearNum, monthNum, dayNum, hourNum, minuteNum].every(n => Number.isFinite(n))) {
+      return NextResponse.json({ code: 400, msg: "参数不完整或非法：year/month/day/hour/minute" });
+    }
+    if (latVal === undefined || latVal === null || latVal === "") {
+      return NextResponse.json({ code: 400, msg: "缺少经纬度：支持 latitude/longitude 或 lat/lng" });
+    }
+    if (lngVal === undefined || lngVal === null || lngVal === "") {
+      return NextResponse.json({ code: 400, msg: "缺少经纬度：支持 latitude/longitude 或 lat/lng" });
+    }
+    const latNum = toNumber(latVal);
+    const lngNum = toNumber(lngVal);
+    if (!Number.isFinite(latNum) || !Number.isFinite(lngNum)) {
+      return NextResponse.json({ code: 400, msg: "经纬度需为数字" });
+    }
+    if (latNum < -90 || latNum > 90 || lngNum < -180 || lngNum > 180) {
+      return NextResponse.json({ code: 400, msg: "经纬度数值非法：lat ∈ [-90,90]，lng ∈ [-180,180]" });
     }
 
     // 本地时间 -> UTC
     // 若提供客户端 tzOffset(分钟, 为 Date.getTimezoneOffset 的值)，按其计算，避免受服务端时区影响
     let utc;
-    if (typeof tzOffset === "number" && isFinite(tzOffset)) {
+    const tzOffNum = toNumber(tzOffset);
+    if (Number.isFinite(tzOffNum)) {
       // 公式：UTC_ms = Date.UTC(本地组件) + tzOffset*60*1000
       // 例：上海 tzOffset = -480，本地 10:00 -> UTC 02:00
-      const utcMs = Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute)) + tzOffset * 60 * 1000;
+      const utcMs = Date.UTC(yearNum, monthNum - 1, dayNum, hourNum, minuteNum) + tzOffNum * 60 * 1000;
       utc = new Date(utcMs);
     } else {
-      const local = new Date(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute));
+      const local = new Date(yearNum, monthNum - 1, dayNum, hourNum, minuteNum);
       utc = new Date(local.getTime());
     }
     const uYear = utc.getUTCFullYear();
@@ -47,8 +73,8 @@ export async function POST(req) {
     let sw;
     try {
       // 动态 require，避免被 webpack 解析 .node
-      const req = eval("require");
-      const mod = req("swisseph");
+      const nodeRequire = eval("require");
+      const mod = nodeRequire("swisseph");
       sw = mod.default || mod;
     } catch (e) {
       // 提供降级（仅返回太阳星座近似）以便前端不崩溃
@@ -66,8 +92,8 @@ export async function POST(req) {
 
     // 设置星历路径（指向包内 ephe 目录），用 require.resolve 更稳妥
     try {
-      const req2 = eval("require");
-      const pkgRoot = path.dirname(req2.resolve("swisseph/package.json"));
+      const nodeRequire2 = eval("require");
+      const pkgRoot = path.dirname(nodeRequire2.resolve("swisseph/package.json"));
       const ephePath = path.join(pkgRoot, "ephe");
       if (typeof sw.swe_set_ephe_path === "function") {
         sw.swe_set_ephe_path(ephePath);
@@ -142,7 +168,7 @@ export async function POST(req) {
     let ascSign = "未知";
     let houses = [];
     try {
-      const h = await calcHouses(Number(lat), Number(lng));
+      const h = await calcHouses(latNum, lngNum);
       // h.cusps: 1..12 宫首黄经（度）
       // h.ascmc: 0: ASC 黄经
       const cusps = h?.cusps || h?.house || [];
@@ -234,4 +260,9 @@ function approxSunSign({ year, month, day }) {
 }
 async function calcSafely(fn) {
   try { return await fn(); } catch { return NaN; }
+}
+function toNumber(v) {
+  if (v === null || v === undefined) return NaN;
+  const n = typeof v === "string" ? Number(v.trim()) : Number(v);
+  return Number.isFinite(n) ? n : NaN;
 }
