@@ -46,7 +46,11 @@ export async function POST(req) {
     // swisseph 计算
     let sw;
     try {
-      const mod = await import("swisseph");
+      // 使用 non-webpack require，避免构建期打包本机 .node
+      const req = (typeof __non_webpack_require__ === "function")
+        ? __non_webpack_require__
+        : (await import("module")).createRequire(import.meta.url);
+      const mod = req("swisseph");
       sw = mod.default || mod;
     } catch (e) {
       // 提供降级（仅返回太阳星座近似）以便前端不崩溃
