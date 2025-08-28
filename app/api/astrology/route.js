@@ -1,22 +1,25 @@
 import { NextResponse } from "next/server";
-import path from "path";
+
 export const runtime = "nodejs";
 
 /**
+ * 纯 JS/WASM 替代版：不依赖 swisseph
+ * - 太阳：近似精度良好（用于星座判定足够）
+ * - 月亮：简化级数（度级精度，判定星座足够）
+ * - 上升/宫位：等宫制（Equal House），用 GMST/LST 与黄赤交角计算上升点
+ *
  * POST /api/astrology
  * body: { year, month, day, hour, minute, latitude/longitude 或 lat/lng, tzOffset? }
- * 返回: {
- *  code: 200,
- *  data: {
- *    sunSign: string,
- *    moonSign: string,
- *    ascendant: string,
- *    houses: Array<{ index: number, sign: string, meaning: string }>
+ * 返回:
+ *  {
+ *    code: 200,
+ *    data: {
+ *      sunSign: string,
+ *      moonSign: string,
+ *      ascendant: string,
+ *      houses: Array<{ index: number, sign: string, meaning: string }>
+ *    }
  *  }
- * }
- * 说明：
- * - 使用 swisseph 以UTC时间计算太阳、月亮、上升及12宫位
- * - 需确保 swisseph 能找到星历表（默认指向 node_modules/swisseph/ephe）
  */
 export async function POST(req) {
   try {
@@ -69,144 +72,43 @@ export async function POST(req) {
     const uDay = utc.getUTCDate();
     const uHour = utc.getUTCHours() + utc.getUTCMinutes() / 60 + utc.getUTCSeconds() / 3600;
 
-    // swisseph 计算
-    let sw;
-    try {
-      // 动态 require，避免被 webpack 解析 .node
-      const nodeRequire = eval("require");
-      const mod = nodeRequire("swisseph");
-      sw = mod.default || mod;
-    } catch (e) {
-      // 提供降级（仅返回太阳星座近似）以便前端不崩溃
-      const sunSign = approxSunSign({ year, month, day });
-      return NextResponse.json({
-        code: 200,
-        data: {
-          sunSign,
-          moonSign: "未知",
-          ascendant: "未知",
-          houses: defaultHousesWithSign(sunSign)
-        }
-      });
-    }
+    // 儒略日（UTC）
+    const jd = julianDay(uYear, uMonth, uDay, uHour);
+    const T = (jd - 2451545.0) / 36525.0; // 世纪数
 
-    // 设置星历路径（指向包内 ephe 目录），用 require.resolve 更稳妥
-    try {
-      const nodeRequire2 = eval("require");
-      const pkgRoot = path.dirname(nodeRequire2.resolve("swisseph/package.json"));
-      const ephePath = path.join(pkgRoot, "ephe");
-      if (typeof sw.swe_set_ephe_path === "function") {
-        sw.swe_set_ephe_path(ephePath);
-      }
-    } catch {}
-
-    // 常量兜底
-    const SE_GREG_CAL = sw.SE_GREG_CAL ?? sw.GREG_CAL ?? 1;
-    const SEFLG_SWIEPH = sw.SEFLG_SWIEPH ?? sw.FLG_SWIEPH ?? 2;
-    const SEFLG_SPEED = sw.SEFLG_SPEED ?? sw.FLG_SPEED ?? 256;
-    const FLAGS = SEFLG_SWIEPH | SEFLG_SPEED;
-    const SE_SUN = sw.SE_SUN ?? sw.SUN ?? 0;
-    const SE_MOON = sw.SE_MOON ?? sw.MOON ?? 1;
-
-    // 儒略日
-    const jd = (typeof sw.swe_julday === "function")
-      ? sw.swe_julday(uYear, uMonth, uDay, uHour, SE_GREG_CAL)
-      : (typeof sw.julday === "function" ? sw.julday(uYear, uMonth, uDay, uHour, SE_GREG_CAL) : null);
-
-    if (!jd) {
-      const sunSign = approxSunSign({ year, month, day });
-      return NextResponse.json({
-        code: 200,
-        data: {
-          sunSign,
-          moonSign: "未知",
-          ascendant: "未知",
-          houses: defaultHousesWithSign(sunSign)
-        }
-      });
-    }
-
-    // 计算行星黄经
-    async function calcLon(ipl) {
-      // 回调风格（Node swisseph 常用）
-      if (typeof sw.swe_calc_ut === "function" && sw.swe_calc_ut.length >= 4) {
-        return await new Promise((resolve, reject) => {
-          sw.swe_calc_ut(jd, ipl, FLAGS, (res) => {
-            const lon =
-              (typeof res?.longitude === "number" && res.longitude) ||
-              (typeof res?.lon === "number" && res.lon) ||
-              (Array.isArray(res) && typeof res[0] === "number" && res[0]) ||
-              (res?.xx && typeof res.xx[0] === "number" && res.xx[0]) ||
-              (res?.x && typeof res.x[0] === "number" && res.x[0]);
-            if (typeof lon === "number") resolve(lon);
-            else reject(new Error("calc failed"));
-          });
-        });
-      }
-      // 兼容可能存在的同步实现
-      if (typeof sw.swe_calc_ut === "function") {
-        const r = sw.swe_calc_ut(jd, ipl, FLAGS);
-        const lon =
-          (typeof r?.longitude === "number" && r.longitude) ||
-          (typeof r?.lon === "number" && r.lon) ||
-          (Array.isArray(r) && typeof r[0] === "number" && r[0]) ||
-          (r?.xx && typeof r.xx[0] === "number" && r.xx[0]) ||
-          (r?.x && typeof r.x[0] === "number" && r.x[0]);
-        if (typeof lon === "number") return lon;
-      }
-      throw new Error("swe_calc_ut not available");
-    }
-
-    // 计算宫位与上升（兼容不同API）
-    async function calcHouses(latVal, lngVal) {
-      // swe_houses(jd_ut, lat, lng, hsys)
-      if (typeof sw.swe_houses === "function") {
-        const r = sw.swe_houses(jd, Number(latVal), Number(lngVal), "P");
-        return r;
-      }
-      if (typeof sw.swe_houses_ex === "function") {
-        const r = sw.swe_houses_ex(jd, FLAGS, Number(latVal), Number(lngVal), "P");
-        return r;
-      }
-      return null;
-    }
-
-    const sunLon = await calcSafely(() => calcLon(SE_SUN));
-    const moonLon = await calcSafely(() => calcLon(SE_MOON));
+    // 太阳与月亮黄经（度）
+    const sunLon = normalizeDeg(sunLongitude(T));
+    const moonLon = normalizeDeg(moonLongitudeApprox(T));
 
     const sunSign = lonToSignName(sunLon);
     const moonSign = lonToSignName(moonLon);
 
-    let ascSign = "未知";
-    let houses = [];
-    try {
-      const h = await calcHouses(latNum, lngNum);
-      // h.cusps: 1..12 宫首黄经（度）
-      // h.ascmc: 0: ASC 黄经
-      const cusps = h?.cusps || h?.house || [];
-      const ascmc = h?.ascmc || h?.ascmc2 || [];
-      const ascLon = Array.isArray(ascmc) ? (ascmc[0] ?? null) : null;
-      if (typeof ascLon === "number") {
-        ascSign = lonToSignName(ascLon);
-      }
-      houses = (cusps?.slice(1, 13) || []).map((deg, idx) => ({
-        index: idx + 1,
+    // 上升与等宫制
+    const eps = deg2rad(meanObliquity(T));         // 黄赤交角（弧度）
+    const thetaG = normalizeDeg(gmst(jd, T));      // 格林尼治平恒星时（度）
+    const lstDeg = normalizeDeg(thetaG + lngNum);  // 当地平恒星时（度）
+    const theta = deg2rad(lstDeg);                 // 恒星时（弧度）
+    const phi = deg2rad(latNum);                   // 纬度（弧度）
+
+    const ascLon = ascendantLongitude(theta, phi, eps); // 度
+    const ascendant = lonToSignName(ascLon);
+
+    // 等宫制 12 宫（每 30°）
+    let houses = Array.from({ length: 12 }, (_, i) => {
+      const deg = normalizeDeg(ascLon + i * 30);
+      return {
+        index: i + 1,
         sign: lonToSignName(deg),
-        meaning: houseMeaning(idx + 1)
-      }));
-      if (!houses.length) {
-        houses = defaultHousesWithSign(sunSign);
-      }
-    } catch {
-      houses = defaultHousesWithSign(sunSign);
-    }
+        meaning: houseMeaning(i + 1)
+      };
+    });
 
     return NextResponse.json({
       code: 200,
       data: {
         sunSign,
         moonSign,
-        ascendant: ascSign,
+        ascendant,
         houses
       }
     });
@@ -215,7 +117,86 @@ export async function POST(req) {
   }
 }
 
-// 辅助函数
+/* ==========================
+   纯 JS 天文计算辅助函数
+   ========================== */
+
+function julianDay(year, month, day, hourDecimal) {
+  // Meeus: 算法（格里历）
+  let y = year;
+  let m = month;
+  if (m <= 2) { y -= 1; m += 12; }
+  const A = Math.floor(y / 100);
+  const B = 2 - A + Math.floor(A / 4);
+  const dayFrac = day + (hourDecimal / 24);
+  const jd = Math.floor(365.25 * (y + 4716)) + Math.floor(30.6001 * (m + 1)) + dayFrac + B - 1524.5;
+  return jd;
+}
+
+function sunLongitude(T) {
+  // 低阶近似（Meeus）
+  const M = deg2rad(normalizeDeg(357.52911 + 35999.05029 * T - 0.0001537 * T * T));
+  const L0 = normalizeDeg(280.46646 + 36000.76983 * T + 0.0003032 * T * T);
+  const C =
+    (1.914602 - 0.004817 * T - 0.000014 * T * T) * Math.sin(M) +
+    (0.019993 - 0.000101 * T) * Math.sin(2 * M) +
+    0.000289 * Math.sin(3 * M);
+  return L0 + C; // 真黄经（度）
+}
+
+function moonLongitudeApprox(T) {
+  // 简化级数（度级精度，足以判定星座）
+  // L'（月亮平黄经）
+  const Lp = normalizeDeg(
+    218.3164477 + 481267.88123421 * T - 0.0015786 * T * T
+  );
+  // 太阳平近点角 M、月亮平近点角 M'、月亮纬度参数 F、日月角距 D
+  const M = normalizeDeg(357.5291092 + 35999.0502909 * T - 0.0001536 * T * T);
+  const Mp = normalizeDeg(134.9633964 + 477198.8675055 * T + 0.0087414 * T * T);
+  const F = normalizeDeg(93.2720950 + 483202.0175233 * T - 0.0036539 * T * T);
+  const D = normalizeDeg(297.8501921 + 445267.1114034 * T - 0.0018819 * T * T);
+
+  // 主要项修正（度）
+  const term =
+    6.289 * Math.sin(deg2rad(Mp)) +
+    1.274 * Math.sin(deg2rad(2 * D - Mp)) +
+    0.658 * Math.sin(deg2rad(2 * D)) +
+    0.214 * Math.sin(deg2rad(2 * Mp)) -
+    0.186 * Math.sin(deg2rad(M)) -
+    0.114 * Math.sin(deg2rad(2 * F));
+  return normalizeDeg(Lp + term);
+}
+
+function meanObliquity(T) {
+  // 黄赤交角均值（度），近似
+  return 23.439291 - 0.0130042 * T;
+}
+
+function gmst(jd, T) {
+  // 格林尼治平恒星时（度）
+  // 公式（近似）：θ0 = 280.46061837 + 360.98564736629*(JD - 2451545)
+  //                + 0.000387933*T^2 - T^3/38710000
+  const theta =
+    280.46061837 +
+    360.98564736629 * (jd - 2451545.0) +
+    0.000387933 * T * T -
+    (T * T * T) / 38710000.0;
+  return normalizeDeg(theta);
+}
+
+function ascendantLongitude(theta, phi, eps) {
+  // 上升点黄经（度）
+  // λAsc = atan2( -cosθ, sinθ·cosε + tanφ·sinε )
+  const y = -Math.cos(theta);
+  const x = Math.sin(theta) * Math.cos(eps) + Math.tan(phi) * Math.sin(eps);
+  let lambda = Math.atan2(y, x); // 弧度
+  if (lambda < 0) lambda += 2 * Math.PI;
+  return rad2deg(lambda);
+}
+
+/* ==========================
+   公用小工具
+   ========================== */
 function lonToSignName(lon) {
   if (typeof lon !== "number" || !isFinite(lon)) return "未知";
   const i = Math.floor(((lon % 360) + 360) % 360 / 30);
@@ -239,42 +220,15 @@ function houseMeaning(i) {
   };
   return m[i] || `第${i}宫`;
 }
-function defaultHousesWithSign(sign) {
-  return Array.from({ length: 12 }, (_, i) => ({
-    index: i + 1,
-    sign,
-    meaning: houseMeaning(i + 1)
-  }));
-}
-// 近似太阳星座（备用）
-function approxSunSign({ year, month, day }) {
-  const d = new Date(Number(year), Number(month) - 1, Number(day));
-  const md = `${d.getMonth()+1}-${d.getDate()}`;
-  const ranges = [
-    ["白羊座","3-21","4-19"],["金牛座","4-20","5-20"],["双子座","5-21","6-21"],["巨蟹座","6-22","7-22"],
-    ["狮子座","7-23","8-22"],["处女座","8-23","9-22"],["天秤座","9-23","10-23"],["天蝎座","10-24","11-22"],
-    ["射手座","11-23","12-21"],["摩羯座","12-22","1-19"],["水瓶座","1-20","2-18"],["双鱼座","2-19","3-20"]
-  ];
-  const val = (s) => {
-    const [m, d] = s.split("-").map(Number);
-    return (m*100 + d);
-  };
-  const x = val(md);
-  for (const [name, a, b] of ranges) {
-    const va = val(a), vb = val(b);
-    if (va <= vb) {
-      if (x >= va && x <= vb) return name;
-    } else {
-      if (x >= va || x <= vb) return name;
-    }
-  }
-  return "白羊座";
-}
-async function calcSafely(fn) {
-  try { return await fn(); } catch { return NaN; }
-}
 function toNumber(v) {
   if (v === null || v === undefined) return NaN;
   const n = typeof v === "string" ? Number(v.trim()) : Number(v);
   return Number.isFinite(n) ? n : NaN;
 }
+function normalizeDeg(a) {
+  let x = a % 360;
+  if (x < 0) x += 360;
+  return x;
+}
+function deg2rad(d) { return d * Math.PI / 180; }
+function rad2deg(r) { return r * 180 / Math.PI; }
