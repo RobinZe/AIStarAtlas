@@ -21,7 +21,8 @@ import { NextResponse } from "next/server";
  */
 
 const DEFAULT_ASYNC_URL =
-  "https://dashscope.aliyuncs.com/api/v1/services/aigc/image-generation/async-generation";
+  "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-async-synthesis";
+  // "https://dashscope.aliyuncs.com/api/v1/services/aigc/image-generation/async-generation";
 const TASK_URL_PREFIX = "https://dashscope.aliyuncs.com/api/v1/tasks/";
 
 export async function POST(req) {
@@ -31,7 +32,7 @@ export async function POST(req) {
 
     const apiKey = process.env.TONGYI_API_KEY;
     const envUrl = process.env.TONGYI_API_URL;
-    const model = process.env.TONGYI_IMAGE_MODEL || "wanx-v1";
+    const model = process.env.TONGYI_IMAGE_MODEL || "wanx2.0-t2i-turbo";
 
     if (!apiKey) {
       return NextResponse.json(
@@ -185,7 +186,7 @@ async function submitAsync(apiUrl, apiKey, prompt, model, timeoutMs = 60000) {
       model,
       input: { prompt },
       parameters: {
-        size: "1024*1024",
+        size: "768*1152",  // "1024*1024",
         n: 1,
       },
     };
@@ -347,7 +348,8 @@ function buildPartial(urls) {
 
 function sanitizeApiUrl(envUrl, fallback) {
   const def =
-    "https://dashscope.aliyuncs.com/api/v1/services/aigc/image-generation/async-generation";
+    "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-async-synthesis";
+    // "https://dashscope.aliyuncs.com/api/v1/services/aigc/image-generation/async-generation";
   const fb = fallback || def;
   if (!envUrl) return fb;
   try {
