@@ -1,6 +1,6 @@
-"use client";
+ "use client";
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import Image from "next/image";
 import axios from "axios";
 import { useForm } from "react-hook-form";
@@ -24,6 +24,8 @@ export default function Page() {
 
   const city = watch("city");
 
+  const locReqIdRef = useRef(0);
+
   // 城市输入自动触发获取经纬度（防抖）
   useEffect(() => {
     const v = city?.trim();
@@ -42,14 +44,18 @@ export default function Page() {
       setError("请输入城市名称");
       return;
     }
+    const reqId = ++locReqIdRef.current;
     try {
       const res = await axios.post("/api/location", { city: v });
+      if (reqId !== locReqIdRef.current) return;
       if (res.data?.code === 200) {
         setCoords({ ...res.data.data, city: v });
+        setError("");
       } else {
         setError(res.data?.msg || "获取经纬度失败");
       }
     } catch (e) {
+      if (reqId !== locReqIdRef.current) return;
       setError("获取经纬度失败");
     }
   };
