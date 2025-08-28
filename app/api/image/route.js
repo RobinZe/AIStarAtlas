@@ -21,7 +21,7 @@ import { NextResponse } from "next/server";
  */
 
 const DEFAULT_ASYNC_URL =
-  "https://dashscope.aliyuncs.com/api/v1/services/aigc/image-generation/async-generation";
+  "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-async-synthesis";
 const TASK_URL_PREFIX = "https://dashscope.aliyuncs.com/api/v1/tasks/";
 
 export async function POST(req) {
@@ -182,8 +182,8 @@ async function submitAsync(apiUrl, apiKey, prompt, model, timeoutMs = 60000) {
     };
     const payload = {
       model,
-      input: {
-        prompt,
+      input: { prompt },
+      parameters: {
         size: "1024*1024",
         n: 1,
       },
@@ -335,15 +335,32 @@ function buildPartial(urls) {
 }
 
 function sanitizeApiUrl(envUrl, fallback) {
-  if (!envUrl) return fallback;
+  const def =
+    "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-async-synthesis";
+  const fb = fallback || def;
+  if (!envUrl) return fb;
   try {
     const u = new URL(envUrl);
-    if (!u.hostname.includes("dashscope.aliyuncs.com")) return fallback;
-    // 需要异步 generation 路径
-    if (!/image-generation\/async-generation/.test(u.pathname)) return fallback;
-    return envUrl;
+    if (!u.hostname.includes("dashscope.aliyuncs.com")) return fb;
+    let path = u.pathname;
+    // 将同步端点自动改写为异步端点
+    path = path
+      .replace(
+        /\/services\/aigc\/image-generation\/generation$/,
+        "/services/aigc/image-generation/async-generation"
+      )
+      .replace(
+        /\/services\/aigc\/text2image\/image-synthesis$/,
+        "/services/aigc/text2image/image-async-synthesis"
+      );
+    const ok =
+      /\/services\/aigc\/image-generation\/async-generation$/.test(path) ||
+      /\/services\/aigc\/text2image\/image-async-synthesis$/.test(path);
+    if (!ok) return fb;
+    u.pathname = path;
+    return u.toString();
   } catch {
-    return fallback;
+    return fb;
   }
 }
 
