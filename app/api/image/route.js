@@ -179,7 +179,7 @@ async function submitAsync(apiUrl, apiKey, prompt, model, timeoutMs = 60000) {
   const t = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const headers = {
-      "X-DashScope-Async": enable,
+      "X-DashScope-Async": "enable",
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`,
     };
