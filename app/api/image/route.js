@@ -21,7 +21,7 @@ import { NextResponse } from "next/server";
  */
 
 const DEFAULT_ASYNC_URL =
-  "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-async-synthesis";
+  "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis";
   // "https://dashscope.aliyuncs.com/api/v1/services/aigc/image-generation/async-generation";
 const TASK_URL_PREFIX = "https://dashscope.aliyuncs.com/api/v1/tasks/";
 
@@ -179,6 +179,7 @@ async function submitAsync(apiUrl, apiKey, prompt, model, timeoutMs = 60000) {
   const t = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const headers = {
+      "X-DashScope-Async": enable
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`,
     };
@@ -348,7 +349,7 @@ function buildPartial(urls) {
 
 function sanitizeApiUrl(envUrl, fallback) {
   const def =
-    "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-async-synthesis";
+    "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis";
     // "https://dashscope.aliyuncs.com/api/v1/services/aigc/image-generation/async-generation";
   const fb = fallback || def;
   if (!envUrl) return fb;
@@ -361,10 +362,10 @@ function sanitizeApiUrl(envUrl, fallback) {
       .replace(
         /\/services\/aigc\/image-generation\/generation$/,
         "/services/aigc/image-generation/async-generation"
-      )
-      .replace(
-        /\/services\/aigc\/text2image\/image-synthesis$/,
-        "/services/aigc/text2image/image-async-synthesis"
+      // )
+      // .replace(
+      //    /\/services\/aigc\/text2image\/image-synthesis$/,
+      //  "/services/aigc/text2image/image-async-synthesis"
       );
     const ok =
       /\/services\/aigc\/image-generation\/async-generation$/.test(path) ||
