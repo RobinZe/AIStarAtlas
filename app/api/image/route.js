@@ -41,6 +41,7 @@ export async function POST(req) {
     }
 
     const apiUrl = sanitizeApiUrl(envUrl, DEFAULT_ASYNC_URL);
+    console.log("image api url =", apiUrl, "model=", model, "pollOnly=", Boolean(taskIds?.natal && taskIds?.fortune));
 
     // 轮询模式：客户端带 taskIds 进来只做查询
     if (taskIds?.natal && taskIds?.fortune) {
@@ -188,6 +189,7 @@ async function submitAsync(apiUrl, apiKey, prompt, model, timeoutMs = 60000) {
         n: 1,
       },
     };
+    console.log("submitAsync ->", apiUrl);
     const res = await fetch(apiUrl, {
       method: "POST",
       headers,
@@ -214,6 +216,7 @@ async function submitAsync(apiUrl, apiKey, prompt, model, timeoutMs = 60000) {
     if (!taskId) {
       throw new Error("submit API no task_id");
     }
+    console.log("submitAsync task_id =", taskId);
     return taskId;
   } catch (err) {
     console.error("submitAsync error:", err?.message || err);
@@ -237,6 +240,14 @@ async function fetchTask(apiKey, taskId, timeoutMs = 30000) {
     let data = null;
     try {
       data = await res.json();
+    } catch {}
+    try {
+      const st =
+        data?.output?.task_status ||
+        data?.task_status ||
+        data?.status ||
+        "";
+      console.log("fetchTask:", taskId, "http", res.status, st || "(no status)");
     } catch {}
     // 某些情况下不严格 2xx 也会有 JSON
     if (!res.ok && data) {
