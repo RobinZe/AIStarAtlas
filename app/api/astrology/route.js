@@ -103,6 +103,8 @@ export async function POST(req) {
     // 常量兜底
     const SE_GREG_CAL = sw.SE_GREG_CAL ?? sw.GREG_CAL ?? 1;
     const SEFLG_SWIEPH = sw.SEFLG_SWIEPH ?? sw.FLG_SWIEPH ?? 2;
+    const SEFLG_SPEED = sw.SEFLG_SPEED ?? sw.FLG_SPEED ?? 256;
+    const FLAGS = SEFLG_SWIEPH | SEFLG_SPEED;
     const SE_SUN = sw.SE_SUN ?? sw.SUN ?? 0;
     const SE_MOON = sw.SE_MOON ?? sw.MOON ?? 1;
 
@@ -126,21 +128,31 @@ export async function POST(req) {
 
     // 计算行星黄经
     async function calcLon(ipl) {
-      // 兼容同步/回调两种实现
-      if (typeof sw.swe_calc_ut === "function" && sw.swe_calc_ut.length <= 3) {
-        const r = sw.swe_calc_ut(jd, ipl, SEFLG_SWIEPH);
-        const lon = r?.longitude ?? r?.lon ?? r?.[0];
-        if (typeof lon === "number") return lon;
-      }
-      // 回调风格
+      // 回调风格（Node swisseph 常用）
       if (typeof sw.swe_calc_ut === "function" && sw.swe_calc_ut.length >= 4) {
         return await new Promise((resolve, reject) => {
-          sw.swe_calc_ut(jd, ipl, SEFLG_SWIEPH, (res) => {
-            const lon = res?.longitude ?? res?.lon ?? res?.[0];
+          sw.swe_calc_ut(jd, ipl, FLAGS, (res) => {
+            const lon =
+              (typeof res?.longitude === "number" && res.longitude) ||
+              (typeof res?.lon === "number" && res.lon) ||
+              (Array.isArray(res) && typeof res[0] === "number" && res[0]) ||
+              (res?.xx && typeof res.xx[0] === "number" && res.xx[0]) ||
+              (res?.x && typeof res.x[0] === "number" && res.x[0]);
             if (typeof lon === "number") resolve(lon);
             else reject(new Error("calc failed"));
           });
         });
+      }
+      // 兼容可能存在的同步实现
+      if (typeof sw.swe_calc_ut === "function") {
+        const r = sw.swe_calc_ut(jd, ipl, FLAGS);
+        const lon =
+          (typeof r?.longitude === "number" && r.longitude) ||
+          (typeof r?.lon === "number" && r.lon) ||
+          (Array.isArray(r) && typeof r[0] === "number" && r[0]) ||
+          (r?.xx && typeof r.xx[0] === "number" && r.xx[0]) ||
+          (r?.x && typeof r.x[0] === "number" && r.x[0]);
+        if (typeof lon === "number") return lon;
       }
       throw new Error("swe_calc_ut not available");
     }
@@ -153,7 +165,7 @@ export async function POST(req) {
         return r;
       }
       if (typeof sw.swe_houses_ex === "function") {
-        const r = sw.swe_houses_ex(jd, 0, Number(latVal), Number(lngVal), "P");
+        const r = sw.swe_houses_ex(jd, FLAGS, Number(latVal), Number(lngVal), "P");
         return r;
       }
       return null;
