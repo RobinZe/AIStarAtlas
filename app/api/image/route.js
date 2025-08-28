@@ -2,25 +2,35 @@ import { NextResponse } from "next/server";
 
 /**
  * POST /api/image
- * body: { astrologyData: object, currentMonth: string }
- * resp: { code: 200, data: { natalChartUrl: string, fortuneUrl: string } }
+ * 请求1：提交生成
+ *  body: { astrologyData: object, currentMonth: string }
+ *  resp:
+ *    - 若短轮询内完成: { code: 200, data: { natalChartUrl, fortuneUrl } }
+ *    - 若未完成: { code: 202, msg: "任务已提交，生成中...", data: { taskIds: { natal, fortune }, partial?: { natalChartUrl?, fortuneUrl? }, nextPollAfterMs } }
+ *
+ * 请求2：轮询结果
+ *  body: { taskIds: { natal: string, fortune: string } }
+ *  resp:
+ *    - 完成: { code: 200, data: { natalChartUrl, fortuneUrl } }
+ *    - 未完成: { code: 202, msg: "生成中...", data: { taskIds, partial?, nextPollAfterMs } }
+ *
  * 说明：
- * - 使用 fetch 调用通义万象生成两张图（参考示例的调用与错误处理方式）
- * - 环境变量沿用：TONGYI_API_KEY、TONGYI_API_URL、TONGYI_IMAGE_MODEL
- * - 无密钥时直接返回 500 错误（不再返回占位图）
+ * - 使用通义万象异步生成端点 + 轮询 tasks 接口
+ * - 环境变量：TONGYI_API_KEY、TONGYI_API_URL（可选，默认 DashScope 异步端点）、TONGYI_IMAGE_MODEL
+ * - “一半时间”短轮询策略：maxPolls = (timeoutMs/2) / intervalMs
  */
+
+const DEFAULT_ASYNC_URL =
+  "https://dashscope.aliyuncs.com/api/v1/services/aigc/image-generation/async-generation";
+const TASK_URL_PREFIX = "https://dashscope.aliyuncs.com/api/v1/tasks/";
+
 export async function POST(req) {
   try {
     const body = await req.json();
-    const { astrologyData, currentMonth } = body || {};
-    if (!astrologyData || !currentMonth) {
-      return NextResponse.json({ code: 400, msg: "参数不完整" });
-    }
+    const { astrologyData, currentMonth, taskIds } = body || {};
 
     const apiKey = process.env.TONGYI_API_KEY;
-    const apiUrl =
-      process.env.TONGYI_API_URL ||
-      "https://dashscope.aliyuncs.com/api/v1/services/aigc/image-generation/generation";
+    const envUrl = process.env.TONGYI_API_URL;
     const model = process.env.TONGYI_IMAGE_MODEL || "wanx-v1";
 
     if (!apiKey) {
@@ -30,20 +40,87 @@ export async function POST(req) {
       );
     }
 
+    const apiUrl = sanitizeApiUrl(envUrl, DEFAULT_ASYNC_URL);
+
+    // 轮询模式：客户端带 taskIds 进来只做查询
+    if (taskIds?.natal && taskIds?.fortune) {
+      const pollOpts = defaultPollOptions();
+      const result = await pollBoth(apiKey, taskIds, pollOpts);
+      if (result.done) {
+        return NextResponse.json({
+          code: 200,
+          data: {
+            natalChartUrl: result.urls.natal || "",
+            fortuneUrl: result.urls.fortune || "",
+          },
+        });
+      }
+      return NextResponse.json(
+        {
+          code: 202,
+          msg: "生成中...",
+          data: {
+            taskIds,
+            partial: buildPartial(result.urls),
+            nextPollAfterMs: pollOpts.intervalMs,
+          },
+        },
+        { status: 202 }
+      );
+    }
+
+    // 提交生成任务
+    if (!astrologyData || !currentMonth) {
+      return NextResponse.json({ code: 400, msg: "参数不完整" }, { status: 400 });
+    }
+
     const natalPrompt = buildNatalPrompt(astrologyData);
     const fortunePrompt = buildFortunePrompt(astrologyData, currentMonth);
 
-    const [natalChartUrl, fortuneUrl] = await Promise.all([
-      callTongyi(apiUrl, apiKey, natalPrompt, model),
-      callTongyi(apiUrl, apiKey, fortunePrompt, model),
+    // 并发提交两张图的异步任务
+    const [natalTask, fortuneTask] = await Promise.all([
+      submitAsync(apiUrl, apiKey, natalPrompt, model),
+      submitAsync(apiUrl, apiKey, fortunePrompt, model),
     ]);
 
-    if (!natalChartUrl || !fortuneUrl) {
-      return NextResponse.json({ code: 400, msg: "图片生成失败" });
+    if (!natalTask || !fortuneTask) {
+      return NextResponse.json(
+        { code: 500, msg: "任务提交失败，请稍后重试" },
+        { status: 500 }
+      );
     }
 
-    return NextResponse.json({ code: 200, data: { natalChartUrl, fortuneUrl } });
+    const submittedTaskIds = { natal: natalTask, fortune: fortuneTask };
+
+    // 短轮询（按照一半的时间设置最大轮询次数）
+    const pollOpts = defaultPollOptions();
+    const shortResult = await pollBoth(apiKey, submittedTaskIds, pollOpts);
+
+    if (shortResult.done) {
+      return NextResponse.json({
+        code: 200,
+        data: {
+          natalChartUrl: shortResult.urls.natal || "",
+          fortuneUrl: shortResult.urls.fortune || "",
+        },
+      });
+    }
+
+    // 未在短轮询窗口内完成，返回 202 + 任务号，让前端显示“生成中...”并继续轮询
+    return NextResponse.json(
+      {
+        code: 202,
+        msg: "任务已提交，生成中...",
+        data: {
+          taskIds: submittedTaskIds,
+          partial: buildPartial(shortResult.urls),
+          nextPollAfterMs: pollOpts.intervalMs,
+        },
+      },
+      { status: 202 }
+    );
   } catch (e) {
+    console.error("image route error:", e?.message || e);
     return NextResponse.json(
       { code: 500, msg: "图片生成失败" },
       { status: 500 }
@@ -94,17 +171,15 @@ function buildFortunePrompt(astrologyData, currentMonth) {
   );
 }
 
-// 通义万象API调用（按阿里云 DashScope Image Generation 协议），使用 fetch 与 response.ok 检查
-async function callTongyi(apiUrl, apiKey, prompt, model, timeoutMs = 60000) {
+/** 提交异步任务，返回 task_id */
+async function submitAsync(apiUrl, apiKey, prompt, model, timeoutMs = 60000) {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
-
   try {
     const headers = {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`,
     };
-
     const payload = {
       model,
       input: {
@@ -112,45 +187,166 @@ async function callTongyi(apiUrl, apiKey, prompt, model, timeoutMs = 60000) {
         size: "1024*1024",
         n: 1,
       },
-      // 可按需添加 parameters: { ... }（如风格、seed 等），遵循官方文档
     };
-
     const res = await fetch(apiUrl, {
       method: "POST",
       headers,
       body: JSON.stringify(payload),
       signal: controller.signal,
     });
-
     if (!res.ok) {
-      let errorData = null;
+      let errJson = null;
       try {
-        errorData = await res.json();
+        errJson = await res.json();
       } catch {}
       throw new Error(
-        `API error: ${res.status} - ${res.statusText}${
-          errorData ? " - " + JSON.stringify(errorData) : ""
+        `submit API error: ${res.status} - ${res.statusText}${
+          errJson ? " - " + JSON.stringify(errJson) : ""
         }`
       );
     }
-
     const data = await res.json();
-
-    // 按官方返回结构解析
-    const result = data?.output?.results?.[0];
-    const url = result?.url || result?.urls?.image_url;
-    if (url) return url;
-
-    // 若返回base64字段
-    const b64 = result?.b64_json || data?.image_base64;
-    if (typeof b64 === "string" && b64) {
-      return `data:image/png;base64,${b64}`;
+    const taskId =
+      data?.output?.task_id ||
+      data?.task_id ||
+      data?.output?.taskId ||
+      data?.taskId;
+    if (!taskId) {
+      throw new Error("submit API no task_id");
     }
-    return "";
+    return taskId;
   } catch (err) {
-    console.error("callTongyi error:", err?.message || err);
+    console.error("submitAsync error:", err?.message || err);
     return "";
   } finally {
     clearTimeout(t);
   }
+}
+
+/** 查询单个任务状态 */
+async function fetchTask(apiKey, taskId, timeoutMs = 30000) {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const url = `${TASK_URL_PREFIX}${encodeURIComponent(taskId)}`;
+    const res = await fetch(url, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: controller.signal,
+    });
+    let data = null;
+    try {
+      data = await res.json();
+    } catch {}
+    // 某些情况下不严格 2xx 也会有 JSON
+    if (!res.ok && data) {
+      // 把服务端的错误透出到日志
+      console.error(
+        "fetchTask non-2xx:",
+        res.status,
+        res.statusText,
+        JSON.stringify(data)
+      );
+    }
+    return data || {};
+  } catch (err) {
+    console.error("fetchTask error:", err?.message || err);
+    return {};
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+/** 从任务返回中提取状态与图片URL */
+function parseTaskResult(taskJson) {
+  const status =
+    taskJson?.output?.task_status ||
+    taskJson?.task_status ||
+    taskJson?.status ||
+    "";
+  const result = taskJson?.output?.results?.[0] || taskJson?.result?.[0] || null;
+  const url =
+    result?.url ||
+    result?.urls?.image_url ||
+    (result?.b64_json ? `data:image/png;base64,${result?.b64_json}` : "");
+  return { status, url };
+}
+
+/** 半时长短轮询策略参数 */
+function defaultPollOptions() {
+  const timeoutMs = 120000; // 总预算 120s
+  const intervalMs = 2000; // 每 2s 轮询一次
+  const halfWindowMs = Math.floor(timeoutMs / 2); // 一半时间
+  const maxPolls = Math.max(1, Math.floor(halfWindowMs / intervalMs));
+  return { timeoutMs, intervalMs, maxPolls };
+}
+
+/** 轮询两个任务，返回是否全部完成与各自 URL（可能部分完成） */
+async function pollBoth(apiKey, taskIds, opts) {
+  const { intervalMs, maxPolls } = opts;
+  let urls = { natal: "", fortune: "" };
+  let finished = { natal: false, fortune: false };
+
+  for (let i = 0; i < maxPolls; i++) {
+    // 并发查询尚未完成的任务
+    const [natalJson, fortuneJson] = await Promise.all([
+      finished.natal ? Promise.resolve(null) : fetchTask(apiKey, taskIds.natal),
+      finished.fortune
+        ? Promise.resolve(null)
+        : fetchTask(apiKey, taskIds.fortune),
+    ]);
+
+    if (natalJson) {
+      const { status, url } = parseTaskResult(natalJson);
+      if (status === "SUCCEEDED") {
+        finished.natal = true;
+        urls.natal = url || urls.natal;
+      } else if (status === "FAILED" || status === "CANCELED") {
+        // 标记完成但无URL（失败）
+        finished.natal = true;
+      }
+    }
+
+    if (fortuneJson) {
+      const { status, url } = parseTaskResult(fortuneJson);
+      if (status === "SUCCEEDED") {
+        finished.fortune = true;
+        urls.fortune = url || urls.fortune;
+      } else if (status === "FAILED" || status === "CANCELED") {
+        finished.fortune = true;
+      }
+    }
+
+    if (finished.natal && finished.fortune) {
+      return { done: !!(urls.natal && urls.fortune), urls };
+    }
+
+    await sleep(intervalMs);
+  }
+
+  return { done: false, urls };
+}
+
+function buildPartial(urls) {
+  const partial = {};
+  if (urls.natal) partial.natalChartUrl = urls.natal;
+  if (urls.fortune) partial.fortuneUrl = urls.fortune;
+  return partial;
+}
+
+function sanitizeApiUrl(envUrl, fallback) {
+  if (!envUrl) return fallback;
+  try {
+    const u = new URL(envUrl);
+    if (!u.hostname.includes("dashscope.aliyuncs.com")) return fallback;
+    // 需要异步 generation 路径
+    if (!/image-generation\/async-generation/.test(u.pathname)) return fallback;
+    return envUrl;
+  } catch {
+    return fallback;
+  }
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
 }
