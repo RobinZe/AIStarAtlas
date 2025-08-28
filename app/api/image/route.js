@@ -187,7 +187,7 @@ async function submitAsync(apiUrl, apiKey, prompt, model, timeoutMs = 60000) {
       model,
       input: { prompt },
       parameters: {
-        size: "768*1152",  // "1024*1024",
+        size: "864*1152",  // "720*1280","1024*1024"
         n: 1,
       },
     };
@@ -233,11 +233,12 @@ async function fetchTask(apiKey, taskId, timeoutMs = 30000) {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const url = `${TASK_URL_PREFIX}${encodeURIComponent(taskId)}`;
+    // const url = `${TASK_URL_PREFIX}${encodeURIComponent(taskId)}`;
+    const url = `${TASK_URL_PREFIX}${taskId}`;
     const res = await fetch(url, {
       method: "GET",
       headers: { Authorization: `Bearer ${apiKey}` },
-      signal: controller.signal,
+      // signal: controller.signal,
     });
     let data = null;
     try {
