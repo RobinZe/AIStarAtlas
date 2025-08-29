@@ -130,6 +130,37 @@ export async function POST(req) {
   }
 }
 
+export async function GET(req) {
+  try {
+    const { searchParams } = new URL(req.url);
+    const src = searchParams.get("src");
+    if (!src) {
+      return NextResponse.json({ code: 400, msg: "缺少 src 参数" }, { status: 400 });
+    }
+    if (!isHttpImageUrl(src)) {
+      return NextResponse.json({ code: 400, msg: "不支持的图片地址" }, { status: 400 });
+    }
+    const upstream = await fetch(src, { method: "GET" });
+    if (!upstream.ok) {
+      return NextResponse.json(
+        { code: 502, msg: `上游错误 ${upstream.status}` },
+        { status: 502 }
+      );
+    }
+    const headers = new Headers();
+    const ct = upstream.headers.get("content-type") || "image/*";
+    const cl = upstream.headers.get("content-length");
+    headers.set("Content-Type", ct);
+    if (cl) headers.set("Content-Length", cl);
+    headers.set("Content-Disposition", "inline");
+    headers.set("Cache-Control", "public, max-age=31536000, immutable");
+    return new NextResponse(upstream.body, { status: 200, headers });
+  } catch (e) {
+    console.error("GET /api/image error:", e?.message || e);
+    return NextResponse.json({ code: 500, msg: "图片查看失败" }, { status: 500 });
+  }
+}
+
 function buildNatalPrompt(astrologyData) {
   const { sunSign, moonSign, ascendant } = astrologyData || {};
   return [
@@ -376,6 +407,19 @@ function sanitizeApiUrl(envUrl, fallback) {
     return u.toString();
   } catch {
     return fb;
+  }
+}
+
+function isHttpImageUrl(src) {
+  try {
+    const u = new URL(src);
+    if (!/^https?:$/.test(u.protocol)) return false;
+    const host = u.hostname || "";
+    // 适度白名单，避免 SSRF（按需扩展）
+    const allowed = host.endsWith("aliyuncs.com") || host.includes("dashscope");
+    return allowed;
+  } catch {
+    return false;
   }
 }
 
