@@ -57,15 +57,22 @@ export async function POST(req) {
     // 本地时间 -> UTC
     // 若提供客户端 tzOffset(分钟, 为 Date.getTimezoneOffset 的值)，按其计算，避免受服务端时区影响
     let utc;
-    const tzOffNum = toNumber(tzOffset);
-    if (Number.isFinite(tzOffNum)) {
+    // 更稳健的 tzOffset 解析：兼容 Unicode/全角负号，且空字符串不视为有效
+    let tzRaw = tzOffset;
+    if (typeof tzRaw === "string") {
+      tzRaw = tzRaw.trim().replace(/\u2212/g, "-").replace(/\uFF0D/g, "-");
+    }
+    const tzOffNum = Number(tzRaw);
+    const hasValidTz = !(typeof tzRaw === "string" && tzRaw === "") && Number.isFinite(tzOffNum);
+
+    if (hasValidTz) {
       // 公式：UTC_ms = Date.UTC(本地组件) + tzOffset*60*1000
       // 例：上海 tzOffset = -480，本地 10:00 -> UTC 02:00
       const utcMs = Date.UTC(yearNum, monthNum - 1, dayNum, hourNum, minuteNum) + tzOffNum * 60 * 1000;
       utc = new Date(utcMs);
     } else {
-      const local = new Date(yearNum, monthNum - 1, dayNum, hourNum, minuteNum);
-      utc = new Date(local.getTime());
+      // 稳定回退：不依赖服务端时区，直接按 UTC 组件构造
+      utc = new Date(Date.UTC(yearNum, monthNum - 1, dayNum, hourNum, minuteNum));
     }
     const uYear = utc.getUTCFullYear();
     const uMonth = utc.getUTCMonth() + 1;
@@ -198,8 +205,9 @@ function ascendantLongitude(theta, phi, eps) {
    公用小工具
    ========================== */
 function lonToSignName(lon) {
-  if (typeof lon !== "number" || !isFinite(lon)) return "未知";
-  const i = Math.floor(((lon % 360) + 360) % 360 / 30);
+  const n = Number(lon);
+  if (!Number.isFinite(n)) return "未知";
+  const i = Math.floor(((n % 360) + 360) % 360 / 30);
   const names = ["白羊座","金牛座","双子座","巨蟹座","狮子座","处女座","天秤座","天蝎座","射手座","摩羯座","水瓶座","双鱼座"];
   return names[i] || "未知";
 }
