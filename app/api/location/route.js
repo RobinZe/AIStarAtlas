@@ -5,7 +5,7 @@ import axios from "axios";
 
 export const runtime = "nodejs";
 
-const CSV_EMBED = `﻿city,lat,lng
+const CSV_EMBED = `city,lat,lng
 北京,39.904,116.407
 上海,31.23,121.474
 天津,39.084,117.361
@@ -85,9 +85,10 @@ function normalizeCity(s) {
     .toString()
     .trim()
     .toLowerCase()
-    .replace(/[\s\u3000]+/g, "")
     .replace(/^\uFEFF/, "") // 去除 BOM
-    .replace(/(市|区|县)$/u, "");
+    .replace(/[\s\u3000]+/g, "")
+    .replace(/[·•・．.\-_,，。\/\\]+/g, "")
+    .replace(/(特别行政区|自治州|自治区|地区|市辖区|省|市|区|县|盟)$/u, "");
 }
 
 
@@ -141,7 +142,7 @@ async function getLocalLatLng(cityInput) {
       const cityVal = normalizeCity(cols[cityIdx]);
       if (!cityVal) continue;
 
-      if (cityVal === target) {
+      if (cityVal === target || target.includes(cityVal) || cityVal.includes(target)) {
         const lat = Number(cols[latIdx]);
         const lng = Number(cols[lngIdx]);
         if (isFinite(lat) && isFinite(lng)) {
@@ -169,7 +170,7 @@ export async function POST(req) {
     const body = await req.json();
     const city = (body?.city || "").trim();
     if (!city) {
-      return NextResponse.json({ code: 400, msg: "城市不能为空" }, { status: 400 });
+      return NextResponse.json({ code: 400, data: null }, { status: 400 });
     }
 
     // 1) 本地 CSV 查询
@@ -178,15 +179,14 @@ export async function POST(req) {
       const { lat, lng } = local;
       return NextResponse.json({
         code: 200,
-        data: { lat, lng, msg: `获取经纬度成功，lat${lat}, lon${lng}` },
-        msg: `获取经纬度成功，lat${lat}, lon${lng}`,
-      }, { headers: { 'x-location-source': 'local' } });
+        data: { lat, lng },
+      });
     }
 
     // 2) 调用高德API
     const key = process.env.AMAP_KEY;
     if (!key) {
-      return NextResponse.json({ code: 400, msg: "缺少 AMAP_KEY 环境变量" }, { status: 400 });
+      return NextResponse.json({ code: 400, data: null }, { status: 400 });
     }
     const url = "https://restapi.amap.com/v3/geocode/geo";
     const res = await axios.get(url, {
@@ -194,21 +194,20 @@ export async function POST(req) {
     });
     const data = res.data;
     if (data?.status !== "1" || !data?.geocodes?.length) {
-      return NextResponse.json({ code: 400, msg: "获取经纬度失败" }, { status: 400 });
+      return NextResponse.json({ code: 400, data: null }, { status: 400 });
     }
     const loc = data.geocodes[0].location; // "lng,lat"
     const [lngStr, latStr] = (loc || "").split(",");
     const lat = Number(latStr);
     const lng = Number(lngStr);
     if (!isFinite(lat) || !isFinite(lng)) {
-      return NextResponse.json({ code: 400, msg: "获取经纬度失败" }, { status: 400 });
+      return NextResponse.json({ code: 400, data: null }, { status: 400 });
     }
     return NextResponse.json({
       code: 200,
-      data: { lat, lng, msg: `获取经纬度成功，lat${lat}, lon${lng}` },
-      msg: `获取经纬度成功，lat${lat}, lon${lng}`,
-    }, { headers: { 'x-location-source': 'amap' } });
+      data: { lat, lng },
+    });
   } catch {
-    return NextResponse.json({ code: 400, msg: "获取经纬度失败" }, { status: 400 });
+    return NextResponse.json({ code: 400, data: null }, { status: 400 });
   }
 }
