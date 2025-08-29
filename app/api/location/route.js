@@ -58,11 +58,56 @@ async function getLocalLatLng(cityInput) {
   try {
     const target = normalizeCity(cityInput);
 
-    const csvPath = path.join(process.cwd(), "app", "api", "location", "lat_lng.csv");
-    const content = tryReadUtf8(csvPath);
+    const candidates = [
+      path.join(process.cwd(), "app", "api", "location", "lat_lng.csv"),
+      path.join(process.cwd(), "public", "lat_lng.csv"),
+      process.env.LOCATION_CSV_PATH || ""
+    ].filter(Boolean);
+    let content = null;
+    for (const p of candidates) {
+      const c = tryReadUtf8(p);
+      if (c) { content = c; break; }
+    }
     if (!content) return null;
 
     const { header, rows } = parseCsv(content);
+    if (!header.length || !rows.length) return null;
+
+    const cityIdx = findIndex(header, ["city", "城市", "name", "名称", "地名"]);
+    const latIdx = findIndex(header, ["lat", "latitude", "纬度"]);
+    const lngIdx = findIndex(header, ["lng", "lon", "long", "经度", "longitude"]);
+    if (cityIdx < 0 || latIdx < 0 || lngIdx < 0) return null;
+
+    for (const cols of rows) {
+      if (cols.length <= Math.max(cityIdx, latIdx, lngIdx)) continue;
+      const cityVal = normalizeCity(cols[cityIdx]);
+      if (!cityVal) continue;
+
+      if (cityVal === target) {
+        const lat = Number(cols[latIdx]);
+        const lng = Number(cols[lngIdx]);
+        if (isFinite(lat) && isFinite(lng)) {
+          return { lat, lng };
+        }
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function getLatLngFromPublic(cityInput, reqUrl) {
+  try {
+    const target = normalizeCity(cityInput);
+    const u = new URL(reqUrl);
+    const prefix = u.pathname.replace(/\/api\/.*$/, "/");
+    const publicUrl = new URL(prefix + "lat_lng.csv", u.origin).toString();
+    const res = await fetch(publicUrl, { cache: "no-store" });
+    if (!res.ok) return null;
+    const text = await res.text();
+
+    const { header, rows } = parseCsv(text);
     if (!header.length || !rows.length) return null;
 
     const cityIdx = findIndex(header, ["city", "城市", "name", "名称", "地名"]);
@@ -105,14 +150,17 @@ export async function POST(req) {
     }
 
     // 1) 本地 CSV 查询
-    const local = await getLocalLatLng(city);
+    let local = await getLocalLatLng(city);
+    if (!local) {
+      local = await getLatLngFromPublic(city, req.url);
+    }
     if (local) {
       const { lat, lng } = local;
       return NextResponse.json({
         code: 200,
-        data: { lat, lng },
+        data: { lat, lng, msg: `获取经纬度成功，lat${lat}, lon${lng}` },
         msg: `获取经纬度成功，lat${lat}, lon${lng}`,
-      });
+      }, { headers: { 'x-location-source': 'local' } });
     }
 
     // 2) 调用高德API
@@ -137,9 +185,9 @@ export async function POST(req) {
     }
     return NextResponse.json({
       code: 200,
-      data: { lat, lng },
-      msg: `搜索经纬度成功，lat${lat}, lon${lng}`,
-    });
+      data: { lat, lng, msg: `获取经纬度成功，lat${lat}, lon${lng}` },
+      msg: `获取经纬度成功，lat${lat}, lon${lng}`,
+    }, { headers: { 'x-location-source': 'amap' } });
   } catch {
     return NextResponse.json({ code: 400, msg: "获取经纬度失败" }, { status: 400 });
   }
