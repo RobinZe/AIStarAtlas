@@ -414,10 +414,23 @@ function isHttpImageUrl(src) {
   try {
     const u = new URL(src);
     if (!/^https?:$/.test(u.protocol)) return false;
-    const host = u.hostname || "";
-    // 适度白名单，避免 SSRF（按需扩展）
-    const allowed = host.endsWith("aliyuncs.com") || host.includes("dashscope");
-    return allowed;
+    const host = (u.hostname || "").toLowerCase();
+
+    // 显式允许的主机（按需扩展）
+    const allowedHosts = new Set([
+      "dashscope.aliyuncs.com",
+      "dashscope-result-wlcb-acdr-1.oss-cn-wulanchabu-acdr-1.aliyuncs.com",
+    ]);
+
+    // 规则：
+    // 1) 显式允许列表
+    if (allowedHosts.has(host)) return true;
+    // 2) dashscope 家族
+    if (host.includes("dashscope")) return true;
+    // 3) *.aliyuncs.com 的 OSS/结果域
+    if (host.endsWith("aliyuncs.com")) return true;
+
+    return false;
   } catch {
     return false;
   }
