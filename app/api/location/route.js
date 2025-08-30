@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import axios from "axios";
 
+
+
 export const runtime = "nodejs";
 
 const CSV_EMBED = `city,lat,lng
@@ -89,33 +91,22 @@ function normalizeCity(s) {
     .replace(/(特别行政区|自治州|自治区|地区|市辖区|省|市|区|县|盟)$/u, "");
 }
 
+
+
 function parseCsv(content) {
-  try {
-    // 确保内容是字符串并处理编码问题
-    const text = String(content)
-      .replace(/\r\n/g, "\n")
-      .replace(/\r/g, "\n");
-    
-    const lines = text.split("\n").filter((l) => l.trim().length > 0);
-    if (lines.length < 2) {
-      console.warn('CSV内容不足:', lines.length);
-      return { header: [], rows: [] };
-    }
+  // 简单 CSV 解析：按行分割、逗号分列；支持 UTF-8 BOM；不处理嵌套逗号（当前数据无需）
+  const text = content.replace(/\r\n/g, "\n");
+  const lines = text.split("\n").filter((l) => l.trim().length > 0);
+  if (lines.length < 2) return { header: [], rows: [] };
 
-    const split = (line) =>
-      line
-        .split(",")
-        .map((x) => x.trim().replace(/^"(.*)"$/s, "$1").replace(/^\uFEFF/, ""));
+  const split = (line) =>
+    line
+      .split(",")
+      .map((x) => x.trim().replace(/^"(.*)"$/s, "$1").replace(/^\uFEFF/, ""));
 
-    const header = split(lines[0]).map((h) => h.toLowerCase());
-    const rows = lines.slice(1).map(split);
-    
-    console.log('CSV解析结果:', { header, rowCount: rows.length, firstRow: rows[0] });
-    return { header, rows };
-  } catch (error) {
-    console.error('CSV解析错误:', error);
-    return { header: [], rows: [] };
-  }
+  const header = split(lines[0]).map((h) => h.toLowerCase());
+  const rows = lines.slice(1).map(split);
+  return { header, rows };
 }
 
 function findIndex(header, aliases) {
@@ -135,52 +126,37 @@ function findIndex(header, aliases) {
 async function getLocalLatLng(cityInput) {
   try {
     const target = normalizeCity(cityInput);
-    console.log('查找城市:', cityInput, '标准化后:', target);
 
     const content = CSV_EMBED;
-    console.log('CSV内容长度:', content.length, '前100字符:', content.substring(0, 100));
 
     const { header, rows } = parseCsv(content);
-    if (!header.length || !rows.length) {
-      console.warn('CSV解析失败');
-      return null;
-    }
+    if (!header.length || !rows.length) return null;
 
     const cityIdx = findIndex(header, ["city", "城市", "name", "名称", "地名"]);
     const latIdx = findIndex(header, ["lat", "latitude", "纬度"]);
     const lngIdx = findIndex(header, ["lng", "lon", "long", "经度", "longitude"]);
-    
-    console.log('列索引:', { cityIdx, latIdx, lngIdx, header });
-    
-    if (cityIdx < 0 || latIdx < 0 || lngIdx < 0) {
-      console.warn('必要的列未找到');
-      return null;
-    }
+    if (cityIdx < 0 || latIdx < 0 || lngIdx < 0) return null;
 
     for (const cols of rows) {
       if (cols.length <= Math.max(cityIdx, latIdx, lngIdx)) continue;
-      
       const cityVal = normalizeCity(cols[cityIdx]);
       if (!cityVal) continue;
 
       if (cityVal === target || target.includes(cityVal) || cityVal.includes(target)) {
         const lat = Number(cols[latIdx]);
         const lng = Number(cols[lngIdx]);
-        
         if (isFinite(lat) && isFinite(lng)) {
-          console.log('找到匹配城市:', cols[cityIdx], { lat, lng });
           return { lat, lng };
         }
       }
     }
-    
-    console.log('未找到匹配城市');
     return null;
-  } catch (error) {
-    console.error('本地经纬度查找错误:', error);
+  } catch {
     return null;
   }
 }
+
+
 
 /**
  * POST /api/location
@@ -194,17 +170,8 @@ export async function POST(req) {
     const body = await req.json();
     const city = (body?.city || "").trim();
     if (!city) {
-      return NextResponse.json({ code: 400, data: null, msg: "城市名称不能为空" }, { status: 400 });
+      return NextResponse.json({ code: 400, data: null }, { status: 400 });
     }
-
-    // 添加环境信息
-    const envInfo = {
-      nodeVersion: process.version,
-      platform: process.platform,
-      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      currentTime: new Date().toISOString()
-    };
-    console.log('环境信息:', envInfo);
 
     // 1) 本地 CSV 查询
     const local = await getLocalLatLng(city);
@@ -213,65 +180,34 @@ export async function POST(req) {
       return NextResponse.json({
         code: 200,
         data: { lat, lng },
-        source: 'local'
       });
     }
 
     // 2) 调用高德API
     const key = process.env.AMAP_KEY;
     if (!key) {
-      console.warn('高德API密钥未配置');
-      return NextResponse.json({ 
-        code: 400, 
-        data: null, 
-        msg: "高德API密钥未配置，无法获取经纬度" 
-      }, { status: 400 });
+      return NextResponse.json({ code: 400, data: null }, { status: 400 });
     }
-    
-    console.log('调用高德API获取城市:', city);
     const url = "https://restapi.amap.com/v3/geocode/geo";
     const res = await axios.get(url, {
       params: { key, address: city },
-      timeout: 10000 // 10秒超时
     });
-    
     const data = res.data;
     if (data?.status !== "1" || !data?.geocodes?.length) {
-      console.warn('高德API返回错误:', data);
-      return NextResponse.json({ 
-        code: 400, 
-        data: null, 
-        msg: "高德API查询失败" 
-      }, { status: 400 });
+      return NextResponse.json({ code: 400, data: null }, { status: 400 });
     }
-    
     const loc = data.geocodes[0].location; // "lng,lat"
     const [lngStr, latStr] = (loc || "").split(",");
     const lat = Number(latStr);
     const lng = Number(lngStr);
-    
     if (!isFinite(lat) || !isFinite(lng)) {
-      console.warn('高德API返回的经纬度无效:', loc);
-      return NextResponse.json({ 
-        code: 400, 
-        data: null, 
-        msg: "高德API返回的经纬度无效" 
-      }, { status: 400 });
+      return NextResponse.json({ code: 400, data: null }, { status: 400 });
     }
-    
-    console.log('高德API成功获取:', city, { lat, lng });
     return NextResponse.json({
       code: 200,
       data: { lat, lng },
-      source: 'amap'
     });
-  } catch (error) {
-    console.error('经纬度获取错误:', error);
-    return NextResponse.json({ 
-      code: 400, 
-      data: null, 
-      msg: "经纬度获取失败",
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    }, { status: 400 });
+  } catch {
+    return NextResponse.json({ code: 400, data: null }, { status: 400 });
   }
 }
