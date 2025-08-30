@@ -26,15 +26,6 @@ export async function POST(req) {
     const body = await req.json();
     const { year, month, day, hour, minute, lat, lng, latitude, longitude, tzOffset } = body || {};
 
-    // 添加环境检测信息
-    const envInfo = {
-      nodeVersion: process.version,
-      platform: process.platform,
-      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      currentTime: new Date().toISOString(),
-      utcOffset: new Date().getTimezoneOffset()
-    };
-
     // 统一转数值与字段兼容（优先 latitude/longitude）
     const yearNum = toNumber(year);
     const monthNum = toNumber(month);
@@ -66,18 +57,10 @@ export async function POST(req) {
     // 本地时间 -> UTC（统一使用客户端 tzOffset；缺失时回退为 -480，避免受服务端时区影响）
     const tzOffRaw = toNumber(tzOffset);
     const tzOffNum = Number.isFinite(tzOffRaw) ? tzOffRaw : -480;
-    
-    // 改进的UTC时间计算，确保跨环境一致性
-    const localDate = new Date(yearNum, monthNum - 1, dayNum, hourNum, minuteNum);
-    const utcMs = localDate.getTime() + tzOffNum * 60 * 1000;
+    // 公式：UTC_ms = Date.UTC(本地组件) + tzOffset*60*1000
+    // 例：上海 tzOffset = -480，本地 10:00 -> UTC 02:00
+    const utcMs = Date.UTC(yearNum, monthNum - 1, dayNum, hourNum, minuteNum) + tzOffNum * 60 * 1000;
     const utc = new Date(utcMs);
-    
-    // 验证UTC时间计算
-    if (isNaN(utc.getTime())) {
-      console.error('UTC时间计算失败:', { yearNum, monthNum, dayNum, hourNum, minuteNum, tzOffNum });
-      return NextResponse.json({ code: 400, msg: "时间参数无效" });
-    }
-    
     const uYear = utc.getUTCFullYear();
     const uMonth = utc.getUTCMonth() + 1;
     const uDay = utc.getUTCDate();
@@ -85,22 +68,11 @@ export async function POST(req) {
 
     // 儒略日（UTC）
     const jd = julianDay(uYear, uMonth, uDay, uHour);
-    if (!Number.isFinite(jd)) {
-      console.error('儒略日计算失败:', { uYear, uMonth, uDay, uHour });
-      return NextResponse.json({ code: 400, msg: "日期计算失败" });
-    }
-    
     const T = (jd - 2451545.0) / 36525.0; // 世纪数
 
     // 太阳与月亮黄经（度）
     const sunLon = normalizeDeg(sunLongitude(T));
     const moonLon = normalizeDeg(moonLongitudeApprox(T));
-    
-    // 验证计算结果
-    if (!Number.isFinite(sunLon) || !Number.isFinite(moonLon)) {
-      console.error('黄经计算失败:', { T, sunLon, moonLon });
-      return NextResponse.json({ code: 400, msg: "天体位置计算失败" });
-    }
 
     const sunSign = lonToSignName(sunLon);
     const moonSign = lonToSignName(moonLon);
@@ -113,13 +85,6 @@ export async function POST(req) {
     const phi = deg2rad(latNum);                   // 纬度（弧度）
 
     const ascLon = ascendantLongitude(theta, phi, eps); // 度
-    
-    // 验证上升点计算
-    if (!Number.isFinite(ascLon)) {
-      console.error('上升点计算失败:', { theta, phi, eps, thetaG, lstDeg });
-      return NextResponse.json({ code: 400, msg: "上升点计算失败" });
-    }
-    
     const ascendant = lonToSignName(ascLon);
 
     // 等宫制 12 宫（每 30°）
@@ -133,20 +98,7 @@ export async function POST(req) {
     });
 
     const debugFlag = body && (body.debug === 1 || body.debug === true || body._debug === 1 || body._debug === true);
-    const debugInfo = debugFlag ? { 
-      tzOffNum, 
-      utc: utc.toISOString(), 
-      jd, 
-      T, 
-      sunLon, 
-      moonLon, 
-      ascLon, 
-      latNum, 
-      lngNum,
-      envInfo,
-      localDate: localDate.toISOString(),
-      utcMs
-    } : undefined;
+    const debugInfo = debugFlag ? { tzOffNum, utc: utc.toISOString(), jd, T, sunLon, moonLon, ascLon, latNum, lngNum } : undefined;
 
     return NextResponse.json({
       code: 200,
@@ -159,12 +111,7 @@ export async function POST(req) {
       ...(debugInfo ? { debug: debugInfo } : {})
     });
   } catch (e) {
-    console.error('星盘计算错误:', e);
-    return NextResponse.json({ 
-      code: 400, 
-      msg: "星盘计算失败",
-      error: process.env.NODE_ENV === 'development' ? e.message : undefined
-    });
+    return NextResponse.json({ code: 400, msg: "星盘计算失败" });
   }
 }
 
