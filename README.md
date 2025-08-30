@@ -5,7 +5,7 @@
 ## 技术栈
 - Next.js 14（App Router，前后端一体化，Vercel Serverless Functions）
 - Tailwind CSS（本地构建，无需CDN）
-- 根据星历表，计算太阳/月亮/上升与宫位
+- swisseph（瑞士星历表，计算太阳/月亮/上升与宫位）
 - 高德地理编码API（根据城市名获取经纬度）
 - 通义万象（图片生成）
 - axios（HTTP请求）
@@ -27,8 +27,6 @@
 参考 .env.example，在 Vercel 项目设置中添加：
 - AMAP_KEY
 - TONGYI_API_KEY
-- TONGYI_API_URL（可选）
-- TONGYI_MODEL_NAME（可选）
 
 ## 部署说明（Vercel）
 1. 推送代码到 GitHub/GitLab
@@ -40,7 +38,7 @@
 - 示例：生日 2000-01-01 12:00，城市 “上海”
   - 步骤：
     1) 输入年月日时分、城市“上海”
-    2) 后台自动获取经纬度，显示 lat/lng
+    2) 点击“获取经纬度”显示 lat/lng
     3) 点击“生成图片”，预期显示两张图片
 - 若未配置通义万象密钥与接口，接口将返回占位图用于联调（部署后请务必配置真实密钥）
 
