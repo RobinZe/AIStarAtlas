@@ -54,26 +54,13 @@ export async function POST(req) {
       return NextResponse.json({ code: 400, msg: "经纬度数值非法：lat ∈ [-90,90]，lng ∈ [-180,180]" });
     }
 
-    // 本地时间 -> UTC
-    // 若提供客户端 tzOffset(分钟, 为 Date.getTimezoneOffset 的值)，按其计算，避免受服务端时区影响
-    let utc;
-    // 更稳健的 tzOffset 解析：兼容 Unicode/全角负号，且空字符串不视为有效
-    let tzRaw = tzOffset;
-    if (typeof tzRaw === "string") {
-      tzRaw = tzRaw.trim().replace(/\u2212/g, "-").replace(/\uFF0D/g, "-");
-    }
-    const tzOffNum = Number(tzRaw);
-    const hasValidTz = !(typeof tzRaw === "string" && tzRaw === "") && Number.isFinite(tzOffNum);
-
-    if (hasValidTz) {
-      // 公式：UTC_ms = Date.UTC(本地组件) + tzOffset*60*1000
-      // 例：上海 tzOffset = -480，本地 10:00 -> UTC 02:00
-      const utcMs = Date.UTC(yearNum, monthNum - 1, dayNum, hourNum, minuteNum) + tzOffNum * 60 * 1000;
-      utc = new Date(utcMs);
-    } else {
-      // 稳定回退：不依赖服务端时区，直接按 UTC 组件构造
-      utc = new Date(Date.UTC(yearNum, monthNum - 1, dayNum, hourNum, minuteNum));
-    }
+    // 本地时间 -> UTC（统一使用客户端 tzOffset；缺失时回退为 -480，避免受服务端时区影响）
+    const tzOffRaw = toNumber(tzOffset);
+    const tzOffNum = Number.isFinite(tzOffRaw) ? tzOffRaw : -480;
+    // 公式：UTC_ms = Date.UTC(本地组件) + tzOffset*60*1000
+    // 例：上海 tzOffset = -480，本地 10:00 -> UTC 02:00
+    const utcMs = Date.UTC(yearNum, monthNum - 1, dayNum, hourNum, minuteNum) + tzOffNum * 60 * 1000;
+    const utc = new Date(utcMs);
     const uYear = utc.getUTCFullYear();
     const uMonth = utc.getUTCMonth() + 1;
     const uDay = utc.getUTCDate();
@@ -110,6 +97,9 @@ export async function POST(req) {
       };
     });
 
+    const debugFlag = body && (body.debug === 1 || body.debug === true || body._debug === 1 || body._debug === true);
+    const debugInfo = debugFlag ? { tzOffNum, utc: utc.toISOString(), jd, T, sunLon, moonLon, ascLon, latNum, lngNum } : undefined;
+
     return NextResponse.json({
       code: 200,
       data: {
@@ -117,7 +107,8 @@ export async function POST(req) {
         moonSign,
         ascendant,
         houses
-      }
+      },
+      ...(debugInfo ? { debug: debugInfo } : {})
     });
   } catch (e) {
     return NextResponse.json({ code: 400, msg: "星盘计算失败" });
