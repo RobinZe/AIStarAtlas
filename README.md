@@ -1,6 +1,7 @@
 # 星盘 + 本月运势（Next.js 14, App Router）
 
 输入生日日期与城市，生成“出生日星盘图 + 本月运势图”。
+体验网址: https://aistaratlas.frexpl.me
 
 ## 技术栈
 - Next.js 14（App Router，前后端一体化，Vercel Serverless Functions）
@@ -46,4 +47,5 @@
 - 不在代码中硬编码任何密钥，均通过环境变量传入
 - swisseph 需要星历表，代码已指向 node_modules/swisseph/ephe
 - 生日时间将转换为UTC参与计算；客户端也会传 tzOffset（分钟）用于精确换算
+
 - next/image 已设置固定宽高以避免布局偏移
